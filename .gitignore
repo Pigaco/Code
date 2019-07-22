@@ -181,3 +181,4 @@ build/
 xdg-shell-protocol.c
 xdg-shell-protocol.h
 tinywl
+/.ccls-cache/

@@ -11,7 +11,7 @@ xdg-shell-protocol.c: xdg-shell-protocol.h
 	wayland-scanner private-code \
 		$(WAYLAND_PROTOCOLS)/stable/xdg-shell/xdg-shell.xml $@
 
-tinywl: tinywl.c xdg-shell-protocol.h xdg-shell-protocol.c
+pigacompositor: pigacompositor.c xdg-shell-protocol.h xdg-shell-protocol.c
 	$(CC) $(CFLAGS) \
 		-g -Werror -I. \
 		-DWLR_USE_UNSTABLE \
@@ -21,7 +21,7 @@ tinywl: tinywl.c xdg-shell-protocol.h xdg-shell-protocol.c
 		-o $@ $<
 
 clean:
-	rm -f tinywl xdg-shell-protocol.h xdg-shell-protocol.c
+	rm -f pigacompositor xdg-shell-protocol.h xdg-shell-protocol.c
 
-.DEFAULT_GOAL=tinywl
+.DEFAULT_GOAL=pigacompositor
 .PHONY: clean
