@@ -8,8 +8,6 @@ class LED
   LED(const uint8_t pin);
   ~LED();
 
-  void loop();
-
   void setPwr(uint8_t pwr);
   uint8_t getPwr();
 
@@ -44,7 +42,7 @@ class SerialConnector
   void handleShortPacket();
 
   const int m_baudRate;
-  char m_serialInput[3] = { 0 };
+  uint8_t m_serialInput[2] = { 0 };
 };
 
 /*
@@ -132,10 +130,11 @@ SerialConnector::~SerialConnector() {}
 void
 SerialConnector::setup()
 {
-  Serial.begin(m_baudRate, SERIAL_8N1);
+  Serial.begin(m_baudRate);
   flush();
-  Serial.write("Hello Flush");
-  sendHello();
+  for(int i = 0; i < 50; ++i) {
+    sendHello();
+  }
 }
 void
 SerialConnector::flush()
@@ -149,21 +148,14 @@ SerialConnector::loop()
     delay(1);
 
     // Read the new byte into the internal buffer.
-    Serial.readBytes(&m_serialInput[2], 1);
+    m_serialInput[0] = Serial.read();
 
     if(m_serialInput[0] & PACKET_LENGTH_MULTIPLE) {
-      m_serialInput[1] = m_serialInput[2];
+      m_serialInput[1] = Serial.read();
 
       handleLongPacket();
-
-      m_serialInput[0] = 0;
-      m_serialInput[1] = 0;
     } else {
-      m_serialInput[0] = m_serialInput[2];
-
-      if(!(m_serialInput[0] & PACKET_LENGTH_MULTIPLE)) {
-        handleShortPacket();
-      }
+      handleShortPacket();
     }
   }
 }
@@ -177,18 +169,15 @@ void
 SerialConnector::handleHello(byte packet)
 {
   // Turn off the status LED -> Everything OK
-  digitalWrite(13, LOW);
   sendHello();
-  flush();
+  digitalWrite(13, LOW);
 }
 void
 SerialConnector::handleLongPacket()
 {
-  if(m_serialInput[0] & PACKET_TYPE_LED) {
-    // This packet controls a LED!
-    uint8_t ledID = m_serialInput[0] >> 3;
-    leds[ledID]->setPwr(m_serialInput[1]);
-  }
+  // This packet controls a LED!
+  uint8_t ledID = (m_serialInput[0] >> 3) & 0b00000111;
+  leds[ledID]->setPwr(m_serialInput[1]);
 }
 void
 SerialConnector::handleShortPacket()
@@ -360,31 +349,25 @@ LED::LED(const uint8_t pin)
   , m_pwr(0)
   , m_counter(0)
   , m_state(0)
-{}
-LED::~LED() {}
-
-void
-LED::loop()
 {
-  m_counter -= 1;
-  if(m_counter == 0) {
-    // When 0 is reached, the counter will be set up to 255.
-    // 0 means off, so the LED must not be switched.
-    m_counter = 255;
-  }
-  if(m_pwr >= m_counter) {
-    digitalWrite(m_pin, m_state);
-    if(m_state == 1)
-      m_state = 0;
-    else
-      m_state = 1;
-  }
+  pinMode(pin, OUTPUT);
+
+  // Initial high.
+  digitalWrite(pin, HIGH);
+
+  delay(10);
+
+  // LOW after
+  digitalWrite(pin, LOW);
 }
+LED::~LED() {}
 
 void
 LED::setPwr(uint8_t pwr)
 {
   m_pwr = pwr;
+  int power = pwr;
+  analogWrite(m_pin, power);
 }
 uint8_t
 LED::getPwr()
@@ -517,27 +500,38 @@ setup(void)
   //!!!!!!!!!!!
 
   // LEDs use the analog pins.
-  leds[0] = new LED(A0);
-  leds[1] = new LED(A1);
-  leds[2] = new LED(A2);
-  leds[3] = new LED(A3);
-  leds[4] = new LED(A4);
-  leds[5] = new LED(A5);
+  leds[0] = new LED(11);
+  leds[1] = new LED(10);
+  leds[2] = new LED(9);
+  leds[3] = new LED(6);
+  leds[4] = new LED(5);
+  leds[5] = new LED(3);
 
   // Buttons use the digital pins.
-  buttons[0] = new Button(10, BUTTON_UP);
-  buttons[1] = new Button(11, BUTTON_DOWN);
+  buttons[0] = new Button(A1, BUTTON_UP);
+  buttons[1] = new Button(A0, BUTTON_DOWN);
   buttons[2] = new Button(12, BUTTON_LEFT);
   buttons[3] = new Button(2, BUTTON_RIGHT);
-  buttons[4] = new Button(9, BUTTON_ACTION);
-  buttons[5] = new Button(3, BUTTON_BUTTON1);
+  buttons[4] = new Button(A2, BUTTON_ACTION);
+  buttons[5] = new Button(A5, BUTTON_BUTTON1);
   buttons[6] = new Button(4, BUTTON_BUTTON2);
-  buttons[7] = new Button(5, BUTTON_BUTTON3);
-  buttons[8] = new Button(6, BUTTON_BUTTON4);
+  buttons[7] = new Button(A4, BUTTON_BUTTON3);
+  buttons[8] = new Button(A3, BUTTON_BUTTON4);
   buttons[9] = new Button(7, BUTTON_BUTTON5);
   buttons[10] = new Button(8, BUTTON_BUTTON6);
 
   serialConnector.leds = leds;
+
+  // Start sweep for testing.
+  for(uint8_t intensity = 0; intensity < 240; intensity += 10) {
+    for(int i = 0; i < 6; ++i) {
+      leds[i]->setPwr(intensity);
+    }
+    delay(50);
+  }
+  for(int i = 0; i < 6; ++i) {
+    leds[i]->setPwr(0);
+  }
 }
 
 void
@@ -546,10 +540,6 @@ loop(void)
   int i;
 
   serialConnector.loop();
-
-  for(i = 0; i < 6; ++i) {
-    leds[i]->loop();
-  }
 
   for(i = 0; i < 11; ++i) {
     buttons[i]->loop();

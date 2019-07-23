@@ -20,6 +20,7 @@ struct pollfd fds[PLAYER_COUNT + 1] = { 0, 0, 0 };
 int err;
 struct libevdev* dev;
 struct libevdev_uinput* uidev;
+int helloReceived[PLAYER_COUNT] = { 0, 0 };
 
 // Mappings from players to buttons.
 unsigned int buttonMapping[2][11] = { { KEY_W,
@@ -60,7 +61,7 @@ serial_setup(int fd)
   /* 9600 baud */
   cfsetispeed(&toptions, B9600);
   cfsetospeed(&toptions, B9600);
-  /* 8 bits, no parity, no stop bits */
+  /* 8 bits, no parity, one stop bit */
   toptions.c_cflag &= ~PARENB;
   toptions.c_cflag &= ~CSTOPB;
   toptions.c_cflag &= ~CSIZE;
@@ -77,16 +78,27 @@ serial_setup(int fd)
   toptions.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
   /* disable output processing */
   toptions.c_oflag &= ~OPOST;
+
+  tcsetattr(fd, TCSANOW, &toptions);
 }
 
 int
 open_serial(char* ttys[])
 {
   for(size_t i = 0; i < PLAYER_COUNT; ++i) {
+    // Serial FDs have to be opened two times, because the first time restarts
+    // the arduino and leads to interesting behaviour on the serial bus.
+
     fds[i].events = POLLIN;// Event for data ready.
     fds[i].fd = open(ttys[i], O_RDWR);
     if(fds[i].fd < 0) {
-      fprintf(stderr, "Could not open tty from %s\n", ttys[i]);
+      fprintf(stderr, "Could not open initial tty from %s\n", ttys[i]);
+      return -1;
+    }
+    close(fds[i].fd);
+    fds[i].fd = open(ttys[i], O_RDWR);
+    if(fds[i].fd < 0) {
+      fprintf(stderr, "Could not open tty from %s a second time\n", ttys[i]);
       return -1;
     }
     serial_setup(fds[i].fd);
@@ -98,7 +110,8 @@ int
 open_pipe(const char* fifo)
 {
   mkfifo(fifo, 0777);
-  fds[PLAYER_COUNT].fd = open(fifo, O_RDONLY);
+  fds[PLAYER_COUNT].fd = open(fifo, O_RDONLY | O_NONBLOCK);
+  fds[PLAYER_COUNT].events = POLLIN;
   if(fds[PLAYER_COUNT].fd < 0) {
     fprintf(stderr, "Could not open pipe from %s\n", fifo);
     return -1;
@@ -144,7 +157,15 @@ handle_read_player(enum ReadSource source, char* buf, ssize_t length)
     // source.
     char data = *(b++);
 
-    if(data & PACKET_LENGTH_MULTIPLE || data & PACKET_TYPE_HELLO) {
+    if(data & PACKET_TYPE_HELLO) {
+      if(!helloReceived[source]) {
+        helloReceived[source] = 1;
+        printf("Received HELLO from player %i.\n", source);
+      }
+      continue;
+    }
+
+    if(data & PACKET_LENGTH_MULTIPLE) {
       // INVALID PACKET! Only singles (button updates) are allowed.
       continue;
     }
@@ -153,7 +174,8 @@ handle_read_player(enum ReadSource source, char* buf, ssize_t length)
       // INVALID PACKET! There are only 11 buttons.
       continue;
     }
-    inject_key_state(buttonMapping[source][button], data & BUTTON_STATE_ON);
+    inject_key_state(buttonMapping[source][button],
+                     (data & BUTTON_STATE_ON) ? 1 : 0);
   }
 }
 
@@ -161,14 +183,14 @@ void
 handle_read_pipe(char* buf, ssize_t length)
 {
   char* b = buf;
-  char data[2];
+  uint8_t data[2];
   while(b < buf + length) {
     data[0] = *(b++);
     if(data[0] & PACKET_TYPE_HELLO) {
       // INVALID PACKET! Only LED control allowed.
       continue;
     }
-    if(data[0] & PACKET_TYPE_LED && b < buf + length) {
+    if(!(data[0] & PACKET_TYPE_BUTTON) && b <= buf + length) {
       // LED packet detected! This is two bytes long.
       data[1] = *(b++);
 
@@ -217,7 +239,8 @@ main(int argc, char* argv[])
     fprintf(stderr, "Could not open serial connections! Quitting.\n");
     return -1;
   }
-  if(open_pipe(argv[2])) {
+
+  if(open_pipe(argv[3])) {
     fprintf(stderr, "Could not create & open pipe! Quitting.\n");
     return -1;
   }
@@ -271,6 +294,8 @@ main(int argc, char* argv[])
   ssize_t length;
   char buf[1024];
 
+  int sentHello = 0;
+
   for(;;) {
     int n = 0;
     n = poll(fds, PLAYER_COUNT + 1, 2000);
@@ -278,34 +303,31 @@ main(int argc, char* argv[])
       if(fds[i].revents & POLLIN) {
         length = read(fds[i].fd, buf, sizeof(buf));
         handle_read(i, buf, length);
+        --n;
+      } else if(fds[i].revents & POLLERR || fds[i].revents & POLLHUP) {
+        // Ignore.
+        --n;
+      } else if(fds[i].revents & POLLNVAL) {
+        fprintf(stderr, "Invalid Poll Value!\n");
+      } else if(fds[i].revents != 0) {
+        fprintf(stderr, "Unknown Poll Return!\n");
       }
     }
-  }
 
-  while(1) {
-    // post a REL_X event
-    err = libevdev_uinput_write_event(uidev, EV_REL, REL_X, -20);
-    if(err != 0)
-      return err;
-    err = libevdev_uinput_write_event(uidev, EV_REL, REL_Y, -20);
-    if(err != 0)
-      return err;
+    if(n > 0) {
+      fprintf(stderr, "Not all events were handled.\n");
+    }
 
-    err = libevdev_uinput_write_event(uidev, EV_KEY, KEY_A, 1);
-    if(err != 0)
-      return err;
-    libevdev_uinput_write_event(uidev, EV_SYN, SYN_REPORT, 0);
-    if(err != 0)
-      return err;
+    if(!sentHello) {
+      printf("Send initial hello packets.\n");
+      sentHello = 1;
 
-    err = libevdev_uinput_write_event(uidev, EV_KEY, KEY_A, 0);
-    if(err != 0)
-      return err;
-    libevdev_uinput_write_event(uidev, EV_SYN, SYN_REPORT, 0);
-    if(err != 0)
-      return err;
-
-    sleep(1);
+      // Handle initial hello packet.
+      uint8_t hello[50] = { PACKET_TYPE_HELLO };
+      write(fds[0].fd, hello, sizeof(hello));
+      write(fds[1].fd, hello, sizeof(hello));
+      printf("Sent initial hello packets.\n");
+    }
   }
 
   close_serial();

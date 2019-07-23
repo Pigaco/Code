@@ -183,3 +183,4 @@ xdg-shell-protocol.h
 tinywl
 /.ccls-cache/
 pigainput/pigainput
+pigaprobe/pigaprobe
